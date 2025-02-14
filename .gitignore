@@ -1,0 +1,8 @@
+# macOS & system files
+.DS_Store
+Thumbs.db
+
+# IDE/Editor settings
+.vscode/
+.idea/
+*.sw?
