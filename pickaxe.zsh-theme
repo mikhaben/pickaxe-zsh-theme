@@ -28,7 +28,8 @@ function user_color {
 
 # Prompt char function (returns arrows instead of $ or #)
 function prompt_char {
-  echo "${HOST_COLOR}❱❱$(user_color)❱%{$reset_color%}"
+  # echo "${HOST_COLOR}❱❱$(user_color)❱%{$reset_color%}"
+  echo "$(user_color)❱%{$reset_color%}"
 }
 
 # PROMPT
@@ -37,8 +38,9 @@ function prompt_char {
 # 3) Show arrows (prompt_char) on a new line where the cursor lands
 PROMPT='%(?, ,${ERROR_COLOR}${FAIL_MESSAGE}%{$reset_color%}
 )
+${RPROMPT_COLOR}$CONDA_DEFAULT_ENV $(node --version) %*%{$reset_color%}
 $(user_color)%n%{$reset_color%}@${HOST_COLOR}%m%{$reset_color%}: ${DIR_COLOR}%~%{$reset_color%}$(git_prompt_info)
 $(prompt_char) '
 
 # Right prompt
-RPROMPT='${RPROMPT_COLOR} $CONDA_DEFAULT_ENV $(node --version) %*%{$reset_color%}'
+# RPROMPT='${RPROMPT_COLOR} $CONDA_DEFAULT_ENV $(node --version) %*%{$reset_color%}'
