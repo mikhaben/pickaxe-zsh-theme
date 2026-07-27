@@ -29,6 +29,27 @@ autoload -Uz add-zsh-hook
 add-zsh-hook precmd pickaxe_fail_char
 pickaxe_fail_char
 
+# Helper: Collapse the middle of the cwd path by character count, not
+# component count: paths up to PICKAXE_PWD_MAX_LEN (default 40) chars show in
+# full; longer ones keep ~/first, then as many trailing dirs as fit, with …
+# replacing only the middle that actually overflows.
+function pickaxe_pwd {
+  local full="${(%):-%~}" max="${PICKAXE_PWD_MAX_LEN:-40}"
+  local -a parts=("${(@s:/:)full}")
+  if (( ${#full} > max && ${#parts} > 3 )); then
+    local head="${(j:/:)parts[1,2]}" tail="${parts[-1]}" i
+    for (( i = ${#parts} - 1; i > 2; i-- )); do
+      (( ${#head} + 3 + ${#parts[i]} + 1 + ${#tail} > max )) && break
+      tail="${parts[i]}/${tail}"
+    done
+    full="${head}/…/${tail}"
+  fi
+  # Escape % so dir names can't be parsed as prompt sequences
+  PICKAXE_PWD="${full//\%/%%}"
+}
+add-zsh-hook precmd pickaxe_pwd
+pickaxe_pwd
+
 # Helper: Detect if Nerd Font is installed
 function has_nerd_font {
   # Check for explicit mode setting (like Powerlevel10k)
@@ -128,12 +149,12 @@ function time_info {
 # 2) Empty line
 # 3) Show env info (python, node, time) on its own line
 # 4) Show user@host + current directory + git info.
-#    Paths of 4+ components collapse to ~/first/…/last so deep trees stay readable.
+#    Long paths collapse in the middle (see pickaxe_pwd) so deep trees stay readable.
 # 5) Show prompt char on a new line where the cursor lands
 PROMPT='%(?..%(130?..${ERROR_COLOR}${FAIL_CHAR} FAIL %?%{$reset_color%}
 ))
 ${RPROMPT_COLOR}$(conda_env_info)$(node_version_info)$(time_info)%{$reset_color%}
-$(user_color)%n%{$reset_color%}@${HOST_COLOR}%m%{$reset_color%}: ${DIR_COLOR}%(4~|%-2~/…/%1~|%~)%{$reset_color%}$(git_prompt_info)
+$(user_color)%n%{$reset_color%}@${HOST_COLOR}%m%{$reset_color%}: ${DIR_COLOR}${PICKAXE_PWD}%{$reset_color%}$(git_prompt_info)
 $(prompt_char) '
 
 # Right prompt
