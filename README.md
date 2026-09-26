@@ -46,19 +46,41 @@ with the terminal title, which leaks the same string. Exit with Ctrl-D.
 
 ## ⚙️ Customization
 
-Edit `pickaxe.zsh-theme` to change colors, the error emoji set (`ERROR_CHARS`),
-or the icons.
+Set any of these in `~/.zshrc` before oh-my-zsh loads the theme:
+
+```zsh
+PICKAXE_MODE=emoji               # emoji icons instead of Nerd Font glyphs
+PICKAXE_PWD_MAX_LEN=60           # collapse the path only past 60 characters (default 40)
+PICKAXE_CMD_MAX_EXEC_TIME=10     # show "took 12s" only for commands over 10s (default 5)
+PICKAXE_ERROR_CHARS=("💥" "🧨")   # emoji picked at random on failure
+PICKAXE_COLOR_DIR=cyan           # also _USER _ROOT _HOST _INFO _ERROR _TIME _GIT _GIT_AHEAD _GIT_DIRTY
+```
+
+Colors take any `%F{...}` value: a name like `cyan` or a 256-color number like `208`.
+
+The theme also works without oh-my-zsh: `source /path/to/pickaxe.zsh-theme` from `~/.zshrc`.
 
 A few behaviours worth knowing:
 
-- **Failures show the exit code** — `💀 FAIL 127` — so you can tell a missing
-  command from a real error.
-- **Ctrl-C stays quiet.** An interrupt (exit code `130`) is not a failure, so it
-  does not print the error line.
-- **Deep paths collapse in the middle** — `~/Projects/…/current-folder`. Paths of
-  three or fewer components are shown in full.
-- **Nerd Font icons are used by default.** Set `PICKAXE_MODE=emoji` before the
-  theme loads to force the emoji fallback, or `PICKAXE_MODE=nerdfont` to be explicit.
+- **Failures show the exit code**, `💀 FAIL 127`, so you can tell a missing
+  command from a real error. The line explains odd codes too:
+  `FAIL 137 (KILL)` for a killed process, `FAIL 1 (0|1|0)` for the pipeline
+  stage that failed, and `FAIL 1 (! inverted 0)` when a leading `!` turned a
+  successful command into a failure. zsh negates the exit code of any command
+  that starts with `! `.
+- **Pressing Enter on an empty line clears the error.** The failure line belongs
+  to the command that just ran, not to the one before it.
+- **Ctrl-C and Ctrl-Z stay quiet.** Exit codes `130` and `148` are your doing,
+  not failures.
+- **Slow commands show their run time**, `took 1m 12s`, once they pass
+  `PICKAXE_CMD_MAX_EXEC_TIME`.
+- **Git shows more than the branch**: `main ⇡1⇣2 +!?` means one commit ahead,
+  two behind, and staged (`+`), unstaged (`!`) and untracked (`?`) changes. `=`
+  marks merge conflicts, and a detached HEAD shows as `@abc1234`.
+- **Deep paths collapse in the middle**, `~/Projects/…/current-folder`, once the
+  path is longer than `PICKAXE_PWD_MAX_LEN` characters.
+- **The active Python env is shown**: a venv (including uv's `.venv`, by project
+  name) wins over a conda env.
 
 ## 💡 Recommendations
 

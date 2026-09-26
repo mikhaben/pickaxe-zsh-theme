@@ -1,40 +1,137 @@
+# pickaxe — a two-line zsh prompt with env info, git status and loud failures.
+#
+# Works as an oh-my-zsh theme (ZSH_THEME="pickaxe") or standalone
+# (`source pickaxe.zsh-theme` from .zshrc). Everything is computed once per
+# prompt in hooks, without subshells; the only external commands are one
+# `git status` inside repositories and `node --version` when $PATH changes.
+#
+# Settings — set them before the theme loads:
+#   PICKAXE_MODE               nerdfont (default) | emoji
+#   PICKAXE_PWD_MAX_LEN        path length before the middle collapses (40)
+#   PICKAXE_CMD_MAX_EXEC_TIME  seconds before "took Xs" shows (5, as in Pure)
+#   PICKAXE_ERROR_CHARS        array of emoji picked at random on failure
+#   PICKAXE_COLOR_*            any %F color name or 0-255 number, see below
 
-# Disable default Python virtual environment prompt
+setopt prompt_subst
+autoload -Uz add-zsh-hook
+zmodload zsh/datetime   # $EPOCHREALTIME for command timing
+
+# The prompt shows the venv itself.
 export VIRTUAL_ENV_DISABLE_PROMPT=1
 
-#  Use the 256-color or named color codes you like.
-HOST_COLOR="%{$fg[yellow]%}"            # hostname
-DIR_COLOR="%{$fg_bold[blue]%}"          # current directory
-USER_COLOR="%{$fg[magenta]%}"           # regular user
-ROOT_USER_COLOR="%{$fg_bold[red]%}"     # root user
-RPROMPT_COLOR="%{$fg[white]%}"          # Right prompt info
-ERROR_COLOR="%{$fg[red]%}"              # command failure message
-# Git prompt settings
-ZSH_THEME_GIT_PROMPT_PREFIX=" %{$fg[green]%}"
-ZSH_THEME_GIT_PROMPT_SUFFIX="%{$reset_color%}"
-ZSH_THEME_GIT_PROMPT_DIRTY="%{$fg[red]%}!"
-ZSH_THEME_GIT_PROMPT_CLEAN=""
+: ${PICKAXE_MODE:=nerdfont}
+: ${PICKAXE_PWD_MAX_LEN:=40}
+: ${PICKAXE_CMD_MAX_EXEC_TIME:=5}
+(( ${+PICKAXE_ERROR_CHARS} )) || typeset -ga PICKAXE_ERROR_CHARS=(
+  "🫠" "💀" "🐛" "💣" "👎" "🙈" "🔥" "🤡" "🚨" "🤯" "❗" "🥶"
+)
 
-# Error char emoji
-ERROR_CHARS=("🫠" "💀" "🐛" "💣" "👎" "🙈" "🔥" "🤡" "🚨" "🤯" "❗" "🥶")
+: ${PICKAXE_COLOR_USER:=magenta}
+: ${PICKAXE_COLOR_ROOT:=red}
+: ${PICKAXE_COLOR_HOST:=yellow}
+: ${PICKAXE_COLOR_DIR:=blue}
+: ${PICKAXE_COLOR_INFO:=white}
+: ${PICKAXE_COLOR_ERROR:=red}
+: ${PICKAXE_COLOR_TIME:=yellow}
+: ${PICKAXE_COLOR_GIT:=green}
+: ${PICKAXE_COLOR_GIT_AHEAD:=cyan}
+: ${PICKAXE_COLOR_GIT_DIRTY:=red}
 
-# Helper: Pick a random error emoji (zsh arrays are 1-indexed)
-# Runs in a precmd hook rather than a $(...) inside PROMPT: command substitutions
-# fork, and $RANDOM in a subshell is seeded from the parent, so every prompt in a
-# session would otherwise show the same emoji.
-function pickaxe_fail_char {
-  FAIL_CHAR="${ERROR_CHARS[$((RANDOM % ${#ERROR_CHARS[@]} + 1))]}"
+typeset -gA _pickaxe_icon
+if [[ $PICKAXE_MODE == emoji ]]; then
+  _pickaxe_icon=(python "🐍" node "🟢" clock "🕐")
+else
+  _pickaxe_icon=(python $'\ue606' node $'\ued0d' clock $'\uf43a')
+fi
+
+# Per-prompt state, filled by the hooks below and read by $PROMPT.
+typeset -g _pickaxe_status _pickaxe_env _pickaxe_pwd _pickaxe_git
+typeset -g _pickaxe_cmd_start _pickaxe_node_path _pickaxe_node_version
+
+# "1h 2m 3s" from whole seconds.
+function _pickaxe_human_time {
+  local -i d=$(( $1 / 86400 )) h=$(( $1 / 3600 % 24 )) m=$(( $1 / 60 % 60 )) s=$(( $1 % 60 ))
+  local out
+  (( d )) && out+="${d}d "
+  (( h )) && out+="${h}h "
+  (( m )) && out+="${m}m "
+  REPLY="${out}${s}s"
 }
-autoload -Uz add-zsh-hook
-add-zsh-hook precmd pickaxe_fail_char
-pickaxe_fail_char
 
-# Helper: Collapse the middle of the cwd path by character count, not
-# component count: paths up to PICKAXE_PWD_MAX_LEN (default 40) chars show in
-# full; longer ones keep ~/first, then as many trailing dirs as fit, with …
-# replacing only the middle that actually overflows.
-function pickaxe_pwd {
-  local full="${(%):-%~}" max="${PICKAXE_PWD_MAX_LEN:-40}"
+# Failure line: emoji, FAIL, the exit code and whatever explains it.
+#   FAIL 137 (KILL)          killed by a signal
+#   FAIL 1 (0|1|0)           which stage of a pipeline failed
+#   FAIL 1 (! inverted 0)    a leading `!` turned a success into a failure
+# Ctrl-C (130) and Ctrl-Z (148) are the user's doing, not failures, so they stay quiet.
+function _pickaxe_render_status {
+  local -i pipefail=$1 code=$2; shift 2
+  local -a pipe=("$@")
+  local line
+
+  if (( code != 0 && code != 130 && code != 148 )); then
+    # What $? would be without a leading `!`: the last stage, or with pipefail
+    # the rightmost failing one.
+    local -i expected=${pipe[-1]} i
+    if (( pipefail )); then
+      expected=0
+      for (( i = ${#pipe}; i > 0; i-- )); do
+        (( pipe[i] )) && { expected=${pipe[i]}; break }
+      done
+    fi
+
+    local detail
+    if (( code != expected )); then
+      detail="! inverted ${(j:|:)pipe}"
+    elif (( ${#pipe} > 1 )); then
+      detail="${(j:|:)pipe}"
+    elif (( code > 128 && code - 128 < ${#signals} )); then
+      detail="${signals[code - 127]}"
+    fi
+
+    local char="${PICKAXE_ERROR_CHARS[RANDOM % ${#PICKAXE_ERROR_CHARS} + 1]}"
+    line="%F{$PICKAXE_COLOR_ERROR}${char} FAIL ${code}${detail:+ ($detail)}%f"
+  fi
+
+  if [[ -n $_pickaxe_cmd_start ]]; then
+    local -i elapsed=$(( EPOCHREALTIME - _pickaxe_cmd_start ))
+    if (( elapsed >= PICKAXE_CMD_MAX_EXEC_TIME )); then
+      _pickaxe_human_time $elapsed
+      line+="${line:+ }%F{$PICKAXE_COLOR_TIME}took ${REPLY}%f"
+    fi
+  fi
+
+  _pickaxe_status="${line:+$line
+}"
+}
+
+# Active Python env (venv wins over conda, it is the more specific one) and
+# Node version, cached against $PATH so nvm/fnm switches still show up.
+function _pickaxe_render_env {
+  local out name
+  if [[ -n $VIRTUAL_ENV ]]; then
+    # uv and python -m venv put the project name in VIRTUAL_ENV_PROMPT; older
+    # virtualenv wraps it as "(name) ".
+    name="${${${VIRTUAL_ENV_PROMPT:-${VIRTUAL_ENV:t}}#\(}%\) }"
+  elif [[ -n $CONDA_DEFAULT_ENV ]]; then
+    name=$CONDA_DEFAULT_ENV
+  fi
+  [[ -n $name ]] && out+="${_pickaxe_icon[python]} ${name//\%/%%}  "
+
+  if (( $+commands[node] )); then
+    if [[ $PATH != $_pickaxe_node_path ]]; then
+      _pickaxe_node_path=$PATH
+      _pickaxe_node_version="$(command node --version 2>/dev/null)"
+    fi
+    [[ -n $_pickaxe_node_version ]] && out+="${_pickaxe_icon[node]} ${_pickaxe_node_version}  "
+  fi
+
+  _pickaxe_env=$out
+}
+
+# Paths up to PICKAXE_PWD_MAX_LEN chars show in full. Longer ones keep ~/first,
+# then as many trailing dirs as fit, with … replacing only the overflow.
+function _pickaxe_render_pwd {
+  local full="${(%):-%~}" max=$PICKAXE_PWD_MAX_LEN
   local -a parts=("${(@s:/:)full}")
   if (( ${#full} > max && ${#parts} > 3 )); then
     local head="${(j:/:)parts[1,2]}" tail="${parts[-1]}" i
@@ -44,118 +141,91 @@ function pickaxe_pwd {
     done
     full="${head}/…/${tail}"
   fi
-  # Escape % so dir names can't be parsed as prompt sequences
-  PICKAXE_PWD="${full//\%/%%}"
-}
-add-zsh-hook precmd pickaxe_pwd
-pickaxe_pwd
-
-# Helper: Detect if Nerd Font is installed
-function has_nerd_font {
-  # Check for explicit mode setting (like Powerlevel10k)
-  # Set PICKAXE_MODE=nerdfont to enable Nerd Font icons
-  # Set PICKAXE_MODE=emoji to force emoji fallback
-  if [[ "$PICKAXE_MODE" == "nerdfont" ]]; then
-    return 0
-  elif [[ "$PICKAXE_MODE" == "emoji" ]]; then
-    return 1
-  fi
-
-  # Auto-detect: assume Nerd Font is available by default
-  # (most modern terminals support it if the font is installed)
-  return 0
+  _pickaxe_pwd="${full//\%/%%}"
 }
 
-# Helper: Get Node.js icon
-function node_icon {
-  if has_nerd_font; then
-    echo "\ued0d"  # Nerd Font Node.js icon
+# Branch (or short hash when detached), ⇡ahead ⇣behind, and markers for
+# staged (+), unstaged (!), untracked (?) and conflicted (=) files.
+# One porcelain v2 call gives all of it. --no-optional-locks keeps the prompt
+# from taking index.lock while another git command runs.
+function _pickaxe_render_git {
+  _pickaxe_git=
+  local out
+  out="$(command git --no-optional-locks status --porcelain=v2 --branch \
+    --ignore-submodules=dirty 2>/dev/null)" || return
+
+  local line branch oid staged unstaged untracked conflicted
+  local -i ahead=0 behind=0
+  for line in "${(@f)out}"; do
+    case $line in
+      ('# branch.oid '*)  oid=${line#\# branch.oid } ;;
+      ('# branch.head '*) branch=${line#\# branch.head } ;;
+      ('# branch.ab '*)
+        local -a ab=(${=line#\# branch.ab })
+        ahead=${ab[1]#+} behind=${ab[2]#-} ;;
+      ('1 '*|'2 '*)
+        [[ ${line[3]} != . ]] && staged='+'
+        [[ ${line[4]} != . ]] && unstaged='!' ;;
+      ('u '*) conflicted='=' ;;
+      ('? '*) untracked='?' ;;
+    esac
+  done
+  [[ $branch == '(detached)' ]] && branch="@${oid[1,7]}"
+  [[ -n $branch ]] || return
+
+  local git=" %F{$PICKAXE_COLOR_GIT}${branch//\%/%%}%f"
+  local sync marks="${conflicted}${staged}${unstaged}${untracked}"
+  (( ahead ))  && sync+="⇡${ahead}"
+  (( behind )) && sync+="⇣${behind}"
+  [[ -n $sync ]]  && git+=" %F{$PICKAXE_COLOR_GIT_AHEAD}${sync}%f"
+  [[ -n $marks ]] && git+=" %F{$PICKAXE_COLOR_GIT_DIRTY}${marks}%f"
+  _pickaxe_git=$git
+}
+
+function _pickaxe_preexec {
+  _pickaxe_cmd_start=$EPOCHREALTIME
+}
+
+function _pickaxe_precmd {
+  # Both in one statement: any command in between would reset $pipestatus.
+  local -a _st=($? $pipestatus)
+  # Read before emulate, which resets it.
+  local -i pipefail=0
+  [[ -o pipefail ]] && pipefail=1
+  emulate -L zsh
+
+  # An empty Enter runs nothing, so it must not repeat the last failure.
+  if [[ -n $_pickaxe_cmd_start ]]; then
+    _pickaxe_render_status $pipefail "${_st[@]}"
   else
-    echo "🟢"
+    _pickaxe_status=
   fi
+  _pickaxe_cmd_start=
+
+  _pickaxe_render_env
+  _pickaxe_render_pwd
+  _pickaxe_render_git
 }
 
-# Helper: Get Python icon
-function python_icon {
-  if has_nerd_font; then
-    echo "\ue606"  # Nerd Font Python icon (devicon)
-  else
-    echo "🐍"
-  fi
-}
+# First in line, so no other precmd hook can reset $? and $pipestatus before
+# they are read. Re-sourcing the theme does not register the hooks twice.
+precmd_functions=(_pickaxe_precmd ${precmd_functions:#_pickaxe_precmd})
+add-zsh-hook preexec _pickaxe_preexec
 
-# Helper: Get time icon
-function time_icon {
-  if has_nerd_font; then
-    echo "\uf43a"  # Nerd Font clock icon (alt)
-  else
-    echo "🕐"
-  fi
-}
+# Root gets a bold red name and arrow instead of magenta.
+typeset -g _pickaxe_user_color="%(!.%B%F{$PICKAXE_COLOR_ROOT}.%F{$PICKAXE_COLOR_USER})"
 
-# Helper: Return color for username and prompt arrows
-function user_color {
-  if [ $UID -eq 0 ]; then
-    echo "${ROOT_USER_COLOR}"
-  else
-    echo "${USER_COLOR}"
-  fi
-}
-
-# Prompt char function (returns arrows instead of $ or #)
-function prompt_char {
-  # echo "${HOST_COLOR}❱❱$(user_color)❱%{$reset_color%}"
-  echo "$(user_color)→%{$reset_color%}"
-}
-
-# Helper: Get Python env with icon if active (conda or venv)
-function conda_env_info {
-  local env_name=""
-
-  # Check for conda environment
-  if [[ -n "$CONDA_DEFAULT_ENV" ]]; then
-    env_name="$CONDA_DEFAULT_ENV"
-  # Check for Python virtual environment
-  elif [[ -n "$VIRTUAL_ENV" ]]; then
-    env_name=$(basename "$VIRTUAL_ENV")
-  fi
-
-  # Display with icon if environment is active
-  if [[ -n "$env_name" ]]; then
-    echo "$(python_icon) $env_name  "
-  fi
-}
-
-# Helper: Get node version with icon if node is available
-# Cached against $PATH so version managers (nvm, fnm) still switch correctly
-# without paying for a `node --version` fork on every prompt.
-function node_version_info {
-  (( $+commands[node] )) || return
-  if [[ "$PATH" != "$_PICKAXE_NODE_PATH" ]]; then
-    _PICKAXE_NODE_PATH="$PATH"
-    _PICKAXE_NODE_VERSION="$(node --version 2>/dev/null)"
-  fi
-  [[ -n "$_PICKAXE_NODE_VERSION" ]] && echo "$(node_icon) ${_PICKAXE_NODE_VERSION}  "
-}
-
-# Helper: Get time with icon
-function time_info {
-  echo "$(time_icon) %*"
-}
-
-# PROMPT
-# 1) On failure, print the emoji, 'FAIL' and the exit code (in red) + newline.
-#    Stays quiet on success and on 130 (Ctrl-C), which is an interrupt, not a failure.
+# 1) Failure / slow-command line, only when there is something to report
 # 2) Empty line
-# 3) Show env info (python, node, time) on its own line
-# 4) Show user@host + current directory + git info.
-#    Long paths collapse in the middle (see pickaxe_pwd) so deep trees stay readable.
-# 5) Show prompt char on a new line where the cursor lands
-PROMPT='%(?..%(130?..${ERROR_COLOR}${FAIL_CHAR} FAIL %?%{$reset_color%}
-))
-${RPROMPT_COLOR}$(conda_env_info)$(node_version_info)$(time_info)%{$reset_color%}
-$(user_color)%n%{$reset_color%}@${HOST_COLOR}%m%{$reset_color%}: ${DIR_COLOR}${PICKAXE_PWD}%{$reset_color%}$(git_prompt_info)
-$(prompt_char) '
+# 3) Python env, Node version, clock
+# 4) user@host: path and git status
+# 5) Arrow where the cursor lands
+PROMPT='${_pickaxe_status}
+%F{$PICKAXE_COLOR_INFO}${_pickaxe_env}${_pickaxe_icon[clock]} %*%f
+${_pickaxe_user_color}%n%f%b@%F{$PICKAXE_COLOR_HOST}%m%f: %B%F{$PICKAXE_COLOR_DIR}${_pickaxe_pwd}%f%b${_pickaxe_git}
+${_pickaxe_user_color}→%f%b '
+RPROMPT=
 
-# Right prompt
-# RPROMPT='${RPROMPT_COLOR} $CONDA_DEFAULT_ENV $(node --version) %*%{$reset_color%}'
+_pickaxe_render_env
+_pickaxe_render_pwd
+_pickaxe_render_git
