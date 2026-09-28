@@ -144,8 +144,9 @@ function _pickaxe_render_pwd {
   _pickaxe_pwd="${full//\%/%%}"
 }
 
-# Branch (or short hash when detached), ⇡ahead ⇣behind, and markers for
-# staged (+), unstaged (!), untracked (?) and conflicted (=) files.
+# Branch (or short hash when detached), ⇡ahead ⇣behind, and file counts for
+# conflicted (=), staged (+), unstaged (!) and untracked (?): "=1 +2 !3 ?4".
+# A file that is both staged and unstaged counts in both.
 # One porcelain v2 call gives all of it. --no-optional-locks keeps the prompt
 # from taking index.lock while another git command runs.
 function _pickaxe_render_git {
@@ -154,8 +155,8 @@ function _pickaxe_render_git {
   out="$(command git --no-optional-locks status --porcelain=v2 --branch \
     --ignore-submodules=dirty 2>/dev/null)" || return
 
-  local line branch oid staged unstaged untracked conflicted
-  local -i ahead=0 behind=0
+  local line branch oid
+  local -i ahead=0 behind=0 staged=0 unstaged=0 untracked=0 conflicted=0
   for line in "${(@f)out}"; do
     case $line in
       ('# branch.oid '*)  oid=${line#\# branch.oid } ;;
@@ -164,21 +165,26 @@ function _pickaxe_render_git {
         local -a ab=(${=line#\# branch.ab })
         ahead=${ab[1]#+} behind=${ab[2]#-} ;;
       ('1 '*|'2 '*)
-        [[ ${line[3]} != . ]] && staged='+'
-        [[ ${line[4]} != . ]] && unstaged='!' ;;
-      ('u '*) conflicted='=' ;;
-      ('? '*) untracked='?' ;;
+        [[ ${line[3]} != . ]] && (( staged++ ))
+        [[ ${line[4]} != . ]] && (( unstaged++ )) ;;
+      ('u '*) (( conflicted++ )) ;;
+      ('? '*) (( untracked++ )) ;;
     esac
   done
   [[ $branch == '(detached)' ]] && branch="@${oid[1,7]}"
   [[ -n $branch ]] || return
 
   local git=" %F{$PICKAXE_COLOR_GIT}${branch//\%/%%}%f"
-  local sync marks="${conflicted}${staged}${unstaged}${untracked}"
-  (( ahead ))  && sync+="⇡${ahead}"
-  (( behind )) && sync+="⇣${behind}"
-  [[ -n $sync ]]  && git+=" %F{$PICKAXE_COLOR_GIT_AHEAD}${sync}%f"
-  [[ -n $marks ]] && git+=" %F{$PICKAXE_COLOR_GIT_DIRTY}${marks}%f"
+  local sync
+  local -a marks
+  (( ahead ))      && sync+="⇡${ahead}"
+  (( behind ))     && sync+="⇣${behind}"
+  (( conflicted )) && marks+=("=${conflicted}")
+  (( staged ))     && marks+=("+${staged}")
+  (( unstaged ))   && marks+=("!${unstaged}")
+  (( untracked ))  && marks+=("?${untracked}")
+  [[ -n $sync ]]   && git+=" %F{$PICKAXE_COLOR_GIT_AHEAD}${sync}%f"
+  (( ${#marks} ))  && git+=" %F{$PICKAXE_COLOR_GIT_DIRTY}${marks}%f"
   _pickaxe_git=$git
 }
 

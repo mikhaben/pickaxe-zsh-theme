@@ -74,9 +74,10 @@ A few behaviours worth knowing:
   not failures.
 - **Slow commands show their run time**, `took 1m 12s`, once they pass
   `PICKAXE_CMD_MAX_EXEC_TIME`.
-- **Git shows more than the branch**: `main ⇡1⇣2 +!?` means one commit ahead,
-  two behind, and staged (`+`), unstaged (`!`) and untracked (`?`) changes. `=`
-  marks merge conflicts, and a detached HEAD shows as `@abc1234`.
+- **Git shows more than the branch**: `main ⇡1⇣2 +1 !2 ?3` means one commit
+  ahead, two behind, one staged (`+`), two unstaged (`!`) and three untracked
+  (`?`) files. `=` counts merge conflicts, and a detached HEAD shows as
+  `@abc1234`.
 - **Deep paths collapse in the middle**, `~/Projects/…/current-folder`, once the
   path is longer than `PICKAXE_PWD_MAX_LEN` characters.
 - **The active Python env is shown**: a venv (including uv's `.venv`, by project
